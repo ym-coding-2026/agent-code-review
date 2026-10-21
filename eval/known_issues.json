@@ -1,0 +1,34 @@
+{
+  "sample_file": "samples/bad_example.py",
+  "description": "示例代码里故意埋的已知问题，用于检验多 Agent 团队的检出能力。",
+  "issues": [
+    {
+      "id": "SEC-1",
+      "dimension": "security",
+      "severity": "high",
+      "desc": "数据库密码硬编码在源码中（DB_PWD = \"123456\"）",
+      "keyword": "123456"
+    },
+    {
+      "id": "SEC-2",
+      "dimension": "security",
+      "severity": "high",
+      "desc": "SQL 语句使用字符串拼接，存在 SQL 注入风险",
+      "keyword": "SELECT * FROM users"
+    },
+    {
+      "id": "BUG-1",
+      "dimension": "bug",
+      "severity": "high",
+      "desc": "divide 函数未处理除数为 0，会抛出 ZeroDivisionError",
+      "keyword": "ZeroDivisionError"
+    },
+    {
+      "id": "TEST-1",
+      "dimension": "test",
+      "severity": "medium",
+      "desc": "缺乏关键函数（divide、double_list、login）的单元测试",
+      "keyword": "测试"
+    }
+  ]
+}
