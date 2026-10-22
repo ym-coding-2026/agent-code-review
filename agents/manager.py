@@ -5,6 +5,8 @@
 # 只不过它调的"工具"是另外 4 个 Agent（专家）。
 # 这就是多 Agent 协作的最小形态：有人统筹，有人分工。
 
+import logging
+
 from .llm import run_agent
 from .experts import run_expert, EXPERT_NAMES
 
@@ -57,7 +59,7 @@ TOOL_TO_ROLE = {
 def _dispatch(name, args_json, code, client):
     """主管派专家：把工具名翻译成专家角色，调专家、打印、返回意见。"""
     role = TOOL_TO_ROLE[name]
-    print("  -> 主管派出专家：" + EXPERT_NAMES[role])
+    logging.info("主管派出专家：%s", EXPERT_NAMES[role])
     return run_expert(role, code, client)
 
 
@@ -77,7 +79,7 @@ def review(code, client):
     )
     user = "请对以下代码做完整 Review：\n\n" + code
 
-    print("主管 Agent 开始协调 4 位专家做代码 Review ...")
+    logging.info("主管 Agent 开始协调 4 位专家做代码 Review ...")
     return run_agent(
         client,
         system,
@@ -85,4 +87,5 @@ def review(code, client):
         tools=TOOL_SCHEMAS,
         tool_executor=executor,
         max_rounds=10,
+        role="manager",
     )

@@ -12,6 +12,7 @@ import os
 import sys
 
 from agents import get_client, review
+from agents.llm import print_stats
 
 # 默认示例代码的位置（里面有我们故意埋的已知问题，方便演示和评测）
 DEFAULT_SAMPLE = os.path.join(os.path.dirname(__file__), "samples", "bad_example.py")
@@ -35,6 +36,7 @@ def main():
     report = review(code, client)
     print("\n===== 最终 Review 报告 =====")
     print(report)
+    print_stats()
 
 
 main()

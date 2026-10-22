@@ -14,7 +14,7 @@ import os
 import json
 
 from agents import get_client, review
-from agents.llm import run_agent
+from agents.llm import run_agent, print_stats
 
 HERE = os.path.dirname(__file__)
 ISSUES_PATH = os.path.join(HERE, "eval", "known_issues.json")
@@ -49,7 +49,7 @@ def judge_by_llm(issue, report, client):
         + "这个已知问题是否被报告明确指出？"
     )
     try:
-        out = run_agent(client, system, user)
+        out = run_agent(client, system, user, role="judge")
         hit = out.strip().upper().startswith("YES")
         return hit, out.strip().replace("\n", " / ")
     except Exception:
@@ -64,7 +64,7 @@ def review_single(code, client):
         "覆盖实现质量、逻辑缺陷、安全风险、测试覆盖四个方面，用中文分条。"
     )
     user = "请审查下面这段代码：\n\n" + code
-    return run_agent(client, system, user)
+    return run_agent(client, system, user, role="single_agent")
 
 
 def evaluate(report, issues, client):
@@ -121,6 +121,8 @@ def main():
         print("  => 两者检出数相同。")
     else:
         print("  => 这次单 Agent 反而更多（样本小，属正常波动，可多次运行取平均）。")
+
+    print_stats()
 
 
 main()

@@ -44,5 +44,5 @@ def run_expert(role, code, client):
     """让某个专家审一遍代码，返回它的分条意见（字符串）。"""
     system = EXPERT_PROMPTS[role]
     user = "请审查下面这段代码：\n\n" + code
-    # 专家是单轮：不需要工具，直接让模型答
-    return run_agent(client, system, user)
+    # 专家是单轮：不需要工具，直接让模型答；role 用于可观测性统计
+    return run_agent(client, system, user, role=role)
