@@ -12,19 +12,26 @@
 
 ```mermaid
 flowchart TD
-    User([用户/代码]) --> Mgr[主管 Agent<br/>编排 + 汇总]
-    Mgr -- "function calling 派活" --> Impl[实现专家<br/>可读性/结构]
-    Mgr -- "function calling 派活" --> Bug[Bug 猎人<br/>逻辑/边界/崩溃]
-    Mgr -- "function calling 派活" --> Sec[安全审计<br/>注入/密钥泄露]
-    Mgr -- "function calling 派活" --> Test[测试工程师<br/>测试清单]
-    Impl --> Mgr
-    Bug --> Mgr
-    Sec --> Mgr
-    Test --> Mgr
-    Mgr --> Report([综合 Review 报告<br/>+ 能否上线结论])
+    User([用户/代码 或 git diff]) --> Plan[规划层 Planner<br/>AST 预分析：该派哪些专家]
+    Plan --> Mgr[主管 Agent<br/>function calling 派活 + 汇总]
+    Mgr -- "派活" --> Impl[实现专家<br/>可读性/结构]
+    Mgr -- "派活" --> Bug[Bug 猎人<br/>逻辑/边界/崩溃]
+    Mgr -- "派活" --> Sec[安全审计<br/>注入/密钥泄露]
+    Mgr -- "派活" --> Test[测试工程师<br/>测试清单]
+    Impl -.-> T1[静态工具层<br/>AST 扫描]
+    Bug -.-> T1
+    Sec -.-> T1
+    Test -.-> T2[测试分析<br/>AST 数函数 + pytest 收集]
+    T1 --> Mgr
+    T2 --> Mgr
+    Mgr --> Report([综合 Review 报告<br/>+ 能否上线结论 + 修复建议])
 ```
 
-每个"专家"本身也是一个 Agent（带专属 system prompt 的 DeepSeek 调用），主管则是用 **function calling** 把"派专家"当成工具来调——这就是多 Agent 协作的最小形态。
+三层结构（P1 之后）：
+
+- **规划层（Planner）**：先用 AST 预分析代码特征（有没有函数、SQL、密钥、网络调用），决定**该派哪些专家**，而不是写死全派。
+- **编排层（Manager）**：主管用 **function calling** 把"派专家"当工具，结合预分析建议自主拍板，再把专家意见汇总成报告。
+- **工具层（Tools）**：专家不再"凭感觉"，而是先跑**确定性的静态分析工具**（纯 AST，零成本、零幻觉）拿到事实证据（哪行、什么规则、什么风险），再由 LLM 综合成报告。两层分离：工具负责"找得到"，模型负责"讲得清"。
 
 ## 目录结构
 
@@ -32,15 +39,20 @@ flowchart TD
 agent-code-review/
 ├── agents/                 # 核心：多 Agent 包
 │   ├── llm.py              #   共享层：DeepSeek 客户端 + Agent 循环 + 可观测性(token统计) + 容错(超时/重试)
-│   ├── experts.py          #   4 个专家 Agent 的人设与调用
-│   ├── manager.py          #   主管 Agent：编排 + 汇总
+│   ├── experts.py          #   4 个专家 Agent 的人设与调用（P1：接入工具证据）
+│   ├── manager.py          #   主管 Agent：function calling 编排 + 汇总（P1：动态规划）
+│   ├── planner.py          #   P1 新增：AST 预分析，决定该派哪些专家
+│   ├── tools/              #   P1 新增：真实工具层（确定性，纯标准库）
+│   │   ├── static.py       #     AST 静态分析：安全/逻辑缺陷/测试覆盖
+│   │   └── gitdiff.py      #     git diff 解析：把未提交改动变成可审文本
 │   └── __init__.py
 ├── samples/
 │   └── bad_example.py      # 内置示例（故意埋了 4 个已知问题）
 ├── eval/
 │   └── known_issues.json   # 评测集：示例代码里的已知问题标注
-├── main.py                 # 入口：跑一次完整 Review
+├── main.py                 # 入口：跑一次完整 Review（支持文件 / --diff）
 ├── eval.py                 # 评测：检出率 + 单/多 Agent 对比
+├── tests_tools.py          # P1 新增：确定性自测（不花 API，验证静态层命中已知问题）
 ├── requirements.txt
 └── .gitignore
 ```
@@ -69,9 +81,14 @@ python main.py
 
 # 审查你自己的代码文件
 python main.py 你的文件.py
+
+# 审查当前仓库未提交的 git 改动（贴近真实 PR 工作流）
+python main.py --diff
 ```
 
-输出会依次打印：主管派发 4 位专家 → 最终综合 Review 报告（含能否上线结论）。运行结束后还会打印一段**可观测性统计**（见下）。
+输出会依次打印：规划层预分析 → 主管派发专家（数量由代码特征决定）→ 最终综合 Review 报告（含能否上线结论；`--diff` 模式下每条问题附带可复制的修复代码）。运行结束后还会打印一段**可观测性统计**（见下）。
+
+> 零成本自测（不需要 API Key）：`python tests_tools.py` 会用确定性静态工具验证 4 个已知问题都能被"找得到"。
 
 ## 工程化特性：可观测性与容错
 
@@ -106,6 +123,28 @@ python main.py 你的文件.py
 
 这一条是"玩具 demo"和"工程化代码"的分水岭——真实环境下 API 不可能 100% 稳定，没有容错的系统一碰到抖动就整体崩。
 
+## 工程化特性（进阶，P1）：真实工具 + 动态规划
+
+P0 解决的是"稳不稳"（可观测、容错）。P1 解决的是"真不真"——不让项目停留在"只是把 LLM 包装一下"：
+
+### 1. 工具增强型专家（Tool-augmented Experts）
+
+安全、逻辑、测试三位专家不再只靠 LLM 凭感觉看代码，而是**先跑确定性静态分析工具**（`agents/tools/static.py`，纯标准库 `ast`+`re`，零额外依赖、零成本、零幻觉），把"哪一行、什么规则、什么风险"作为**事实证据**注入 prompt，再由 LLM 综合成报告。
+
+- 安全扫描：硬编码密钥、SQL 字符串拼接注入、`eval/exec`、`os.system`、危险的反序列化等；
+- 逻辑扫描：除零、裸 `except`、可变默认参数等；
+- 测试分析：AST 数函数定义 + **真实跑 `pytest --co`** 统计能收集到几个测试（装了 pytest 才跑，没装则优雅降级）。
+
+设计上刻意做了**分层**：静态层负责"找得到"（可复现、可作真值），LLM 层负责"讲得清"（翻译、排优先级、给修复建议）。`tests_tools.py` 就是基于这一层做的确定性自测。
+
+### 2. 主管动态规划（Dynamic Planning）
+
+原版主管的 prompt 写死"4 个专家都应派到"，所谓"自主规划"是假的。现在加了 **Planner 层**（`agents/planner.py`）：先用 AST 预分析代码特征（有函数 / 有 SQL / 有密钥 / 是否测试文件），给出"该派哪些专家"的建议并打日志，主管再结合建议用 function calling 自主拍板——**不必全派**。比如一段纯算法代码没有数据库操作，就不会派安全专家，省 token 也更聚焦。
+
+### 3. git diff 审查模式
+
+真实工作流里我们审的是 PR / 提交里的 diff，不是整文件重读。`main.py --diff` 用 `git diff` 拿到未提交改动，解析成"每个文件改了哪些行"，只把这些行喂给团队——既聚焦又省钱；`--diff` 模式下报告还会为每条问题附上**可复制的修复代码**。
+
 ## 评测
 
 `eval.py` 用内建评测集检验团队能否把示例代码里**故意埋的 4 个已知问题**都揪出来，并和"单 Agent 基线"对比：
@@ -137,6 +176,9 @@ python eval.py
 - **DeepSeek (`deepseek-chat`)** + OpenAI Python SDK（兼容接口）
 - **Function Calling**：主管自主决定派哪些专家、派几次
 - **多 Agent 编排**：1 主管 + 4 专家，结果汇总
+- **动态规划（P1）**：Planner 用 AST 预分析决定派遣方案，主管结合建议拍板
+- **工具增强（P1）**：专家先跑 AST 静态分析拿事实证据，再综合报告
+- **git diff 审查（P1）**：解析未提交改动，聚焦 + 省钱 + 给修复代码
 - **LLM-as-judge 评测**：用量化指标衡量系统质量
 - **可观测性**：按 Agent 角色统计 token / 调用次数 / 预估花费
 - **容错**：API 调用统一带超时（30s）+ 指数退避重试（最多 3 次）
@@ -145,16 +187,20 @@ python eval.py
 
 - 真实 function calling：工具调用由**模型自主决策**，而非写死规则
 - 多 Agent 分工 + 主管统筹，体现 Agent 工程核心思想
+- **动态规划**：不是写死全派，而是按代码特征决定派哪些专家
+- **工具增强**：专家基于确定性静态分析（AST）的事实证据做判断，不瞎编行号
 - 内建评测集与量化指标（对标生产级系统的验收方式）
+- 确定性自测 `tests_tools.py`：不花 API 即可验证静态层命中已知问题
 - **可观测性**：每个 Agent 的 token 消耗与成本可追踪，便于定位瓶颈
 - **容错设计**：超时 + 重试，避免一次 API 抖动拖垮整个 Review
-- 可降级：无 key / 无网络时给出清晰提示而非崩溃
+- 可降级：无 key / 无网络 / 无 pytest 时均给出清晰提示而非崩溃
 
 ## 局限性（诚实说明）
 
 - 示例与评测集较小，指标仅作演示，非统计显著结论
 - 质量依赖底层 LLM，非确定性输出
-- 是教学/作品级项目，非生产级代码审查工具（无静态分析、无 AST 解析）
+- 静态分析规则是"够用的教学集"，非 bandit/semgrep 级别的完整规则库
+- 是教学/作品级项目，非生产级代码审查工具（未接 CI、不修真实仓库）
 
 ## 与 RAG 项目的关系
 
