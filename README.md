@@ -52,6 +52,8 @@ agent-code-review/
 │   └── known_issues.json   # 评测集：示例代码里的已知问题标注
 ├── main.py                 # 入口：跑一次完整 Review（支持文件 / --diff）
 ├── eval.py                 # 评测：检出率 + 单/多 Agent 对比
+├── ci_review.py            # P2 新增：CI 入口（确定性静态审查，高危卡合并）
+├── .github/workflows/      # P2 新增：GitHub Actions，让项目自己审自己的 PR
 ├── tests_tools.py          # P1 新增：确定性自测（不花 API，验证静态层命中已知问题）
 ├── requirements.txt
 └── .gitignore
@@ -145,6 +147,28 @@ P0 解决的是"稳不稳"（可观测、容错）。P1 解决的是"真不真"�
 
 真实工作流里我们审的是 PR / 提交里的 diff，不是整文件重读。`main.py --diff` 用 `git diff` 拿到未提交改动，解析成"每个文件改了哪些行"，只把这些行喂给团队——既聚焦又省钱；`--diff` 模式下报告还会为每条问题附上**可复制的修复代码**。
 
+## CI / 自动静态审查（dogfood，P2）
+
+P1 让专家"有工具可用"，P2 让项目**真的能当工具用**——它会在每次开 PR 时**自己审自己的改动**，而不只是本地跑一遍 demo。
+
+### 做了什么
+
+- **`ci_review.py`**：CI 入口。自动拿到本次改动的 diff（本地未提交 / 已暂存 / PR 的 `origin/main...HEAD`），**只针对改动的 `.py` 文件、且只报"本次新增/修改行"上的问题**（行号精确，不会把文件里的历史遗留问题算到本次 PR 头上）。发现 high 级问题就以退出码 1 失败，**卡住合并**；中/低级只告警。
+- **`.github/workflows/code-review.yml`**：在 `pull_request` / `push` 到 `main` 时自动运行上面的审查。**这一步只跑确定性静态分析，不需要 API Key、不花钱**，所以适合每次 PR 都跑。
+- **扩展规则库**：在原有"安全/逻辑"基础上新增**风格/坏味道**检查——`open()` 没用 `with`、`requests` 没设 `timeout`、`assert` 当控制流、残留 `TODO/FIXME`。
+
+### 为什么这一步对面试有用
+
+很多"多 Agent"项目止步于"本地 demo"。加上 CI 后，这个项目就变成了一个**能接进真实开发流程的审查工具**：它自己审自己的 PR，开 PR 就会自动跑、高危直接红。这是"工程化闭环"最直观的证据。
+
+```bash
+# 本地模拟 CI：审当前改动（不需要 API Key）
+python ci_review.py
+python ci_review.py --json     # 额外输出 JSON（方便接其他系统）
+```
+
+> 说明：CI 只跑静态层（免费、确定性）。LLM 深度审查（`python main.py --diff`）是按需的人工动作，不在 CI 里跑。
+
 ## 评测
 
 `eval.py` 用内建评测集检验团队能否把示例代码里**故意埋的 4 个已知问题**都揪出来，并和"单 Agent 基线"对比：
@@ -179,6 +203,8 @@ python eval.py
 - **动态规划（P1）**：Planner 用 AST 预分析决定派遣方案，主管结合建议拍板
 - **工具增强（P1）**：专家先跑 AST 静态分析拿事实证据，再综合报告
 - **git diff 审查（P1）**：解析未提交改动，聚焦 + 省钱 + 给修复代码
+- **CI 自动审查（P2）**：GitHub Actions 让项目自己审自己的 PR，高危直接卡合并（dogfood）
+- **扩展规则库（P2）**：在 AST 安全/逻辑规则上新增风格坏味道检查（open/with、requests timeout、assert 控制流、TODO）
 - **LLM-as-judge 评测**：用量化指标衡量系统质量
 - **可观测性**：按 Agent 角色统计 token / 调用次数 / 预估花费
 - **容错**：API 调用统一带超时（30s）+ 指数退避重试（最多 3 次）
@@ -200,7 +226,7 @@ python eval.py
 - 示例与评测集较小，指标仅作演示，非统计显著结论
 - 质量依赖底层 LLM，非确定性输出
 - 静态分析规则是"够用的教学集"，非 bandit/semgrep 级别的完整规则库
-- 是教学/作品级项目，非生产级代码审查工具（未接 CI、不修真实仓库）
+- 是教学/作品级项目，非生产级代码审查工具（CI 只跑静态层；未自动把 LLM 审查贴到 PR 评论）
 
 ## 与 RAG 项目的关系
 

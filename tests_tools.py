@@ -13,7 +13,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from agents.tools.static import analyze_security, analyze_bugs, analyze_tests
+from agents.tools.static import analyze_security, analyze_bugs, analyze_tests, analyze_style
+from agents.tools.gitdiff import parse_diff
 from agents.planner import recommend_experts
 
 SAMPLE = os.path.join(HERE, "samples", "bad_example.py")
@@ -59,6 +60,48 @@ def run():
     # 5) 规划：示例代码应建议派安全专家
     rec = recommend_experts(code, SAMPLE)["recommend"]
     ok &= check("预分析建议派遣『安全审计』", rec.get("security", False), str(rec))
+
+    # 6) 扩展风格规则（合成片段，不依赖示例文件）
+    synth = (
+        "import requests\n"
+        "def f():\n"
+        '    r = requests.get("https://example.com")\n'      # 没 timeout
+        '    fh = open("x.txt")\n'                           # 没 with
+        "    assert r.status_code == 200\n"                 # assert 控制流
+        "# TODO: handle error\n"
+    )
+    style = analyze_style(synth)
+    ok &= check("扩展规则：requests 无 timeout 被识别",
+                any(x["rule"] == "REQUEST_NO_TIMEOUT" for x in style))
+    ok &= check("扩展规则：open 无 with 被识别",
+                any(x["rule"] == "OPEN_WITHOUT_WITH" for x in style))
+    ok &= check("扩展规则：assert 控制流被识别",
+                any(x["rule"] == "ASSERT_CONTROL_FLOW" for x in style))
+    ok &= check("扩展规则：TODO 标记被识别",
+                any(x["rule"] == "TODO_MARKER" for x in style))
+
+    # 7) diff 行号过滤：只把新增行算作改动，上下文行不算
+    sdiff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "index 111..222 100644\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " import os\n"
+        '+DB_PWD = "123456"\n'          # 新增行（新文件第 2 行）
+        " old_line  # 上下文行（新文件第 3 行，不应被算作改动）\n"
+    )
+    parsed = parse_diff(sdiff)
+    changed = set()
+    for h in parsed[0]["hunks"]:
+        ln = h["start"]
+        for kind, _t in h["lines"]:
+            if kind == "+":
+                changed.add(ln)
+            if kind in (" ", "+"):
+                ln += 1
+    ok &= check("scan_diff：只把新增行算作改动（上下文行排除）",
+                2 in changed and 3 not in changed, "changed=" + str(sorted(changed)))
 
     print("\n结果：" + ("全部通过 ✅" if ok else "存在失败 ❌"))
     sys.exit(0 if ok else 1)

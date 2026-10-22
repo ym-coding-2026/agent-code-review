@@ -15,6 +15,8 @@ import os
 import re
 import subprocess
 
+from .gitdiff import parse_diff
+
 # 看起来像密钥/密码的变量名（赋值给字符串字面量时报警）。
 # 用带边界的正则，避免误伤 tokenizer / mytoken 这类正常标识符，
 # 但能认出 db_pwd、api_key、secret_key、Password 等写法。
@@ -259,3 +261,131 @@ def format_test_result(res):
     else:
         parts.append("  目录内未发现测试文件 -> 测试覆盖为 0")
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# P2 新增：代码风格 / 坏味道检查 + 按 diff 行号过滤的扫描
+# ---------------------------------------------------------------------------
+
+def _func_name(node):
+    """取调用节点的函数名（support foo() 与 obj.foo()）。"""
+    f = node.func
+    if isinstance(f, ast.Name):
+        return f.id
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    return ""
+
+
+def _is_requests_call(node):
+    """判断调用是不是 requests.<method>。"""
+    f = node.func
+    return (isinstance(f, ast.Attribute)
+            and isinstance(f.value, ast.Name)
+            and f.value.id == "requests")
+
+
+def analyze_style(code):
+    """代码风格 / 坏味道检查（教学级规则集，非 bandit 全量）：
+
+    - open() 没用 with（资源泄漏）
+    - requests.get/post/... 没设 timeout（可能网络挂起卡死）
+    - 用 assert 做参数/业务校验（python -O 下被移除）
+    - 残留 TODO/FIXME/XXX 注释
+
+    返回 list[dict]，每项 {line, severity, rule, message}。
+    """
+    findings = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return findings
+
+    # 先标记哪些 open() 处于 with 语句内（避免误报）
+    open_in_with = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                ce = item.context_expr
+                if isinstance(ce, ast.Call) and _func_name(ce) == "open":
+                    open_in_with.add(id(ce))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = _func_name(node)
+            if name == "open" and id(node) not in open_in_with:
+                findings.append({
+                    "line": node.lineno, "severity": "low",
+                    "rule": "OPEN_WITHOUT_WITH",
+                    "message": "open() 建议改用 with open(...) 以自动关闭文件",
+                })
+            if name in ("get", "post", "put", "delete", "patch") and _is_requests_call(node):
+                has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
+                if not has_timeout:
+                    findings.append({
+                        "line": node.lineno, "severity": "medium",
+                        "rule": "REQUEST_NO_TIMEOUT",
+                        "message": "requests.%s 未设置 timeout，可能因网络挂起而卡死" % name,
+                    })
+        if isinstance(node, ast.Assert):
+            findings.append({
+                "line": node.lineno, "severity": "low",
+                "rule": "ASSERT_CONTROL_FLOW",
+                "message": "用 assert 做参数/业务校验会在 python -O 下被移除，建议改 raise",
+            })
+
+    for i, line in enumerate(code.splitlines(), 1):
+        s = line.strip()
+        if s.startswith("#") and re.search(r"(?i)\b(TODO|FIXME|XXX)\b", s):
+            tag = s.split()[0] if s.split() else "TODO"
+            findings.append({
+                "line": i, "severity": "low",
+                "rule": "TODO_MARKER",
+                "message": "残留 %s 标记，建议在跟踪系统中登记后清理" % tag,
+            })
+
+    findings.sort(key=lambda f: f["line"])
+    return findings
+
+
+def scan_code(code):
+    """对整段代码跑全部静态检查（安全 + 逻辑 + 风格），返回合并后的 findings。"""
+    return analyze_security(code) + analyze_bugs(code) + analyze_style(code)
+
+
+def scan_diff(diff_text, repo_root="."):
+    """扫描一个 git diff：只针对改动的 .py 文件、只报『本次新增/修改行』上的问题。
+
+    关键：用 diff 里的 '+' 行号（新文件行号）做精确归因，避免把文件里
+    历史遗留问题算到本次 PR 头上。
+
+    返回 list[dict]：{file, line, severity, rule, message}。
+    """
+    parsed = parse_diff(diff_text)
+    out = []
+    for f in parsed:
+        if not f["file"].endswith(".py"):
+            continue                      # 只看 Python 文件
+        fpath = os.path.join(repo_root, f["file"])
+        if not os.path.isfile(fpath):
+            continue
+        # 收集本次改动的新文件行号（只看 + 行）
+        changed = set()
+        for h in f["hunks"]:
+            ln = h["start"]
+            for kind, _text in h["lines"]:
+                if kind == "+":
+                    changed.add(ln)
+                if kind in (" ", "+"):
+                    ln += 1             # 上下文与新增都推进新文件行号；'-' 不推进
+        if not changed:
+            continue
+        with open(fpath, encoding="utf-8") as fh:
+            code = fh.read()
+        for fd in scan_code(code):
+            if fd.get("line") in changed:
+                item = dict(fd)
+                item["file"] = f["file"]
+                out.append(item)
+    out.sort(key=lambda x: (x["file"], x["line"]))
+    return out

@@ -1,0 +1,38 @@
+# .github/workflows/code-review.yml
+# P2：让这个仓库"自己审自己的 PR"——每次开 PR 都跑确定性静态审查。
+# 一旦发现高危（high）问题，CI 判定失败，卡住合并。
+# 这一步只跑静态分析（不需要 API Key、不花钱），适合每次 PR 都跑。
+
+name: Static Code Review
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  static-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout（拉全量历史，便于算 diff）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 取 PR 目标分支
+        if: github.event_name == 'pull_request'
+        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 运行静态审查
+        run: python ci_review.py --base origin/${{ github.event.pull_request.base.ref }}
+        if: github.event_name == 'pull_request'
+
+      # push 到 main 时（无 base 概念）改为审最近一次提交
+      - name: 运行静态审查（push 到 main）
+        if: github.event_name == 'push'
+        run: python ci_review.py
